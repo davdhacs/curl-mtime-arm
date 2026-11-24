@@ -137,7 +137,7 @@ jobs:
               # warm: the .o set was restored by brine (incremental
               # mode); re-stamp so make sees changed sources (commit
               # date) newer, unchanged older. Regen rules disabled
-              # (the missing script doesn't exist without autoreconf;
+              # (the missing script does not exist without autoreconf;
               # guarded by configure.ac -ot so build-system changes
               # take the cold path)
               find bld -type f -exec touch -d @$STAMP {} +
