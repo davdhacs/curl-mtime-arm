@@ -145,7 +145,7 @@ jobs:
               { git ls-files --others --ignored --exclude-standard -z; } | xargs -0 -r touch -d @$STAMP
               make -C bld V=1 AUTOCONF=true AUTOMAKE=true AUTOHEADER=true
               # post-make: re-stamp bld to NOW so the receipt snapshot
-              # captures everything (make's freshness used the STAMP;
+              # captures everything (make freshness used the STAMP;
               # the snapshot needs post-builtAt mtimes — restored .libs
               # files with old stamps were being dropped from receipts)
               find bld -type f -exec touch {} +
