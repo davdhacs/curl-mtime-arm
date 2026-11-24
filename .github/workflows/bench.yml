@@ -123,7 +123,7 @@ jobs:
           BRINE_GH_TOKEN: ${{ github.token }}
         run: |
           cd "$GITHUB_WORKSPACE"
-          printf '{\n  "incremental": true,\n  "output_patterns": ["bld/**"]\n}\n' > .brine.json
+          printf '{\n  "incremental": true,\n  "output_patterns": ["bld/**", "configure", "*.in", "missing", "install-sh", "compile", "depcomp", "aclocal.m4"]\n}\n' > .brine.json
           export BRINE_REMOTE=1 BRINE_GOCACHE_REMOTE=1
           T0=$(date +%s%3N)
           brine sh -c '
