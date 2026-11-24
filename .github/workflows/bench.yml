@@ -79,6 +79,11 @@ jobs:
           with open(os.environ['GITHUB_ENV'], 'a') as f:
               f.write(f"T_CUR={head_t}\n")
           PYEOF
+          # refresh the index stat-cache: mtime changes make diff-index
+          # --quiet see phantom dirt (content identical, stats stale) —
+          # which silently disabled commit receipts (found live)
+          git update-index --really-refresh > /dev/null 2>&1 || true
+          git diff-index --quiet HEAD -- && echo "tree clean after refresh" || echo "WARNING: tree dirty"
           echo "RESULT mtime_norm done"
 
       - uses: davdhacs/brine/.github/actions/env-bootstrap@master
