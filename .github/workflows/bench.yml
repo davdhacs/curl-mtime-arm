@@ -53,38 +53,33 @@ jobs:
         run: |
           cd "$GITHUB_WORKSPACE"
           python3 << 'PYEOF'
-          import subprocess, os
-          # position of each commit: 0 = master (newest). Synthetic time
-          # T(p) = BASE - p*60 (epoch, timezone-free). Replay order is
-          # oldest-first, so each build's commit is "newer" than the
-          # previously built one — matching live-CI ordering.
-          revs = subprocess.run(['git','rev-list','master'], capture_output=True, text=True).stdout.split()
-          pos = {sha: i for i, sha in enumerate(revs)}
-          BASE = 1577836800  # 2020-01-01T00:00:00Z
-          log = subprocess.run(['git','log','--format=%H','--name-only'], capture_output=True, text=True).stdout
+          import subprocess, os, time
+          # Real commit dates (epoch, timezone-free), first-touch wins
+          # (git log is newest-first). The .o stamp is set to the
+          # CURRENT commit's date minus 30s — changed sources are then
+          # always newer than the stamp, unchanged older; the build's
+          # wall-clock time never enters the comparison.
+          log = subprocess.run(['git','log','--format=%ct','--name-only'], capture_output=True, text=True).stdout
           seen = set(); cur = None; stamped = 0
           for line in log.splitlines():
               if not line: continue
-              if len(line) == 40 and all(c in '0123456789abcdef' for c in line):
-                  cur = line; continue
+              if line.isdigit():
+                  cur = int(line); continue
               f = line
               if f in seen or not os.path.exists(f): continue
-              t = BASE - pos.get(cur, len(revs)) * 60
-              os.utime(f, (t, t)); seen.add(f); stamped += 1
-          print(f"stamped {stamped} files; min/max source mtime:")
-          import time
+              os.utime(f, (cur, cur)); seen.add(f); stamped += 1
+          print(f"stamped {stamped} files")
           ts = sorted(os.stat(f).st_mtime for f in seen)
           print("  min:", time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(ts[0])))
           print("  max:", time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(ts[-1])))
           print("  now:", time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()))
+          # the current commit's date - 30s: the .o stamp
+          head_t = int(subprocess.run(['git','log','-1','--format=%ct'], capture_output=True, text=True).stdout.strip())
+          print(f"  head commit: {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(head_t))}")
+          with open(os.environ['GITHUB_ENV'], 'a') as f:
+              f.write(f"T_CUR={head_t}\n")
           PYEOF
-          # the current commit's position + its synthetic time (for the .o stamp)
-          CUR="${{ inputs.commit }}"
-          [ -z "$CUR" ] && CUR=$(git rev-parse master~1)
-          P=$(git rev-list --count "$CUR"..master)
-          echo "P=$P" >> "$GITHUB_ENV"
-          echo "T_CUR=$((1577836800 - P*60))" >> "$GITHUB_ENV"
-          echo "RESULT mtime_norm p=$P"
+          echo "RESULT mtime_norm done"
 
       - uses: davdhacs/brine/.github/actions/env-bootstrap@master
 
