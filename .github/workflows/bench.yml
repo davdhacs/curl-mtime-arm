@@ -133,12 +133,15 @@ jobs:
             # LatestManifestForCommand never matches and the incremental
             # warm never fires)
             STAMP=$(( $(git log -1 --format=%ct HEAD) - 30 ))
-            if [ -f bld/Makefile ]; then
+            if [ -f bld/Makefile ] && [ configure.ac -ot bld/Makefile ]; then
               # warm: the .o set was restored by brine (incremental
               # mode); re-stamp so make sees changed sources (commit
-              # date) newer, unchanged older
+              # date) newer, unchanged older. Regen rules disabled
+              # (the missing script doesn't exist without autoreconf;
+              # guarded by configure.ac -ot so build-system changes
+              # take the cold path)
               find bld -type f -exec touch -d @$STAMP {} +
-              make -C bld V=1
+              make -C bld V=1 AUTOCONF=true AUTOMAKE=true AUTOHEADER=true
             else
               autoreconf -fi
               mkdir bld && cd bld
