@@ -123,11 +123,16 @@ jobs:
           T0=$(date +%s%3N)
           brine sh -c '
             set -e
+            # the stamp: current commit date - 30s (computed IN the script
+            # so the command string is CONSTANT across commits — else
+            # LatestManifestForCommand never matches and the incremental
+            # warm never fires)
+            STAMP=$(( $(git log -1 --format=%ct HEAD) - 30 ))
             if [ -f bld/Makefile ]; then
               # warm: the .o set was restored by brine (incremental
-              # mode); re-stamp to the synthetic midpoint so make sees
-              # changed sources (T_CUR) newer, unchanged older
-              find bld -type f -exec touch -d @'"$((T_CUR - 30))"' {} +
+              # mode); re-stamp so make sees changed sources (commit
+              # date) newer, unchanged older
+              find bld -type f -exec touch -d @$STAMP {} +
               make -C bld V=1
             else
               autoreconf -fi
@@ -136,7 +141,7 @@ jobs:
                 --disable-dependency-tracking --enable-option-checking=fatal \
                 --with-mbedtls="$HOME/deps/pkg/mbedtls" --enable-debug
               cd ..
-              find bld -type f -exec touch -d @'"$((T_CUR - 30))"' {} +
+              find bld -type f -exec touch -d @$STAMP {} +
               make -C bld V=1
             fi
           '
