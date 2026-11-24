@@ -1,0 +1,171 @@
+name: bench
+# Arm C: brine receipts as the incremental layer — NO ccache.
+# Source files stamped with synthetic commit-order mtimes; on a
+# receipt miss, brine's incremental mode restores the previous
+# commit's bld/** and make's own freshness check decides the rebuild:
+# unchanged sources (older) < restored .o (midpoint stamp) < changed
+# sources (current commit) → only changed files recompile.
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: 'curl commit SHA to replay (default: master~1)'
+        required: false
+        type: string
+
+permissions:
+  actions: write
+
+env:
+  MBEDTLS_VERSION: 4.3.0
+  MAKEFLAGS: -j 5
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Runner record + calibration probe
+        run: |
+          { date -u +%FT%TZ; grep -m1 'model name' /proc/cpuinfo; echo "nproc=$(nproc)"; } | tee "$RUNNER_TEMP/runner.txt"
+          curl -sSfLO https://sqlite.org/2024/sqlite-amalgamation-3450100.zip
+          unzip -q sqlite-amalgamation-3450100.zip
+          cd sqlite-amalgamation-3450100
+          for i in 1 2 3; do
+            rm -f sqlite3.o
+            S=$(date +%s%3N); gcc -O2 -c sqlite3.c; E=$(date +%s%3N)
+            echo "calib_ms=$((E-S))"
+          done | tee "$RUNNER_TEMP/calib.txt"
+
+      - name: Checkout curl at the target commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit || 'master~1' }}
+          fetch-depth: 0
+
+      - name: Install prereqs (curl's own package list)
+        run: |
+          sudo apt-get -o Dpkg::Use-Pty=0 update
+          sudo apt-get -o Dpkg::Use-Pty=0 install -y \
+            libtool autoconf automake pkgconf libpsl-dev zlib1g-dev libbrotli-dev libzstd-dev libnghttp2-dev
+
+      - name: Normalize source mtimes to commit order (synthetic, epoch-based)
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          python3 << 'PYEOF'
+          import subprocess, os
+          # position of each commit: 0 = master (newest). Synthetic time
+          # T(p) = BASE - p*60 (epoch, timezone-free). Replay order is
+          # oldest-first, so each build's commit is "newer" than the
+          # previously built one — matching live-CI ordering.
+          revs = subprocess.run(['git','rev-list','master'], capture_output=True, text=True).stdout.split()
+          pos = {sha: i for i, sha in enumerate(revs)}
+          BASE = 1577836800  # 2020-01-01T00:00:00Z
+          log = subprocess.run(['git','log','--format=%H','--name-only'], capture_output=True, text=True).stdout
+          seen = set(); cur = None; stamped = 0
+          for line in log.splitlines():
+              if not line: continue
+              if len(line) == 40 and all(c in '0123456789abcdef' for c in line):
+                  cur = line; continue
+              f = line
+              if f in seen or not os.path.exists(f): continue
+              t = BASE - pos.get(cur, len(revs)) * 60
+              os.utime(f, (t, t)); seen.add(f); stamped += 1
+          print(f"stamped {stamped} files; min/max source mtime:")
+          import time
+          ts = sorted(os.stat(f).st_mtime for f in seen)
+          print("  min:", time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(ts[0])))
+          print("  max:", time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(ts[-1])))
+          print("  now:", time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()))
+          PYEOF
+          # the current commit's position + its synthetic time (for the .o stamp)
+          CUR="${{ inputs.commit }}"
+          [ -z "$CUR" ] && CUR=$(git rev-parse master~1)
+          P=$(git rev-list --count "$CUR"..master)
+          echo "P=$P" >> "$GITHUB_ENV"
+          echo "T_CUR=$((1577836800 - P*60))" >> "$GITHUB_ENV"
+          echo "RESULT mtime_norm p=$P"
+
+      - uses: davdhacs/brine/.github/actions/env-bootstrap@master
+
+      - name: Install brine
+        run: |
+          curl -sSfL https://github.com/davdhacs/brine/releases/download/v0.5.0-gha/brine-linux-amd64 -o /usr/local/bin/brine
+          chmod +x /usr/local/bin/brine
+
+      - name: 'build mbedtls under brine (receipt-cached on tarball content)'
+        env:
+          BRINE_GH_TOKEN: ${{ github.token }}
+        run: |
+          export BRINE_REMOTE=1 BRINE_GOCACHE_REMOTE=1
+          mkdir -p "$HOME/deps/pkg" && cd "$HOME/deps"
+          curl --disable --fail --silent --show-error --connect-timeout 15 --max-time 120 --retry 6 --retry-connrefused \
+            --location --proto-redir =https "https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-${MBEDTLS_VERSION}/mbedtls-${MBEDTLS_VERSION}.tar.bz2" --output mbedtls.tar.bz2
+          tar xf mbedtls.tar.bz2
+          printf '{\n  "closure": "key_files",\n  "key_files": ["mbedtls.tar.bz2"],\n  "output_patterns": ["pkg/**"]\n}\n' > .brine.json
+          T0=$(date +%s%3N)
+          brine sh -c '
+            set -e
+            cd "mbedtls-'"$MBEDTLS_VERSION"'"
+            ./scripts/config.py set MBEDTLS_THREADING_C
+            ./scripts/config.py set MBEDTLS_THREADING_PTHREAD
+            cmake -B . -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DCMAKE_INSTALL_PREFIX="$HOME/deps/pkg/mbedtls" \
+              -DENABLE_PROGRAMS=OFF -DENABLE_TESTING=OFF
+            cmake --build .
+            cmake --install .
+          '
+          E=$(date +%s%3N)
+          echo "RESULT phase=dep_build ms=$((E-T0))"
+
+      - name: "Build curl with brine incremental (receipt-restored .o, make decides)"
+        env:
+          LDFLAGS: -Wl,-rpath,/home/runner/deps/pkg/mbedtls/lib
+          BRINE_GH_TOKEN: ${{ github.token }}
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          printf '{\n  "incremental": true,\n  "output_patterns": ["bld/**"]\n}\n' > .brine.json
+          export BRINE_REMOTE=1 BRINE_GOCACHE_REMOTE=1
+          T0=$(date +%s%3N)
+          brine sh -c '
+            set -e
+            if [ -f bld/Makefile ]; then
+              # warm: the .o set was restored by brine (incremental
+              # mode); re-stamp to the synthetic midpoint so make sees
+              # changed sources (T_CUR) newer, unchanged older
+              find bld -type f -exec touch -d @'"$((T_CUR - 30))"' {} +
+              make -C bld V=1
+            else
+              autoreconf -fi
+              mkdir bld && cd bld
+              ../configure --prefix="$HOME"/curl-install --enable-unity --enable-warnings --enable-werror --disable-static \
+                --disable-dependency-tracking --enable-option-checking=fatal \
+                --with-mbedtls="$HOME/deps/pkg/mbedtls" --enable-debug
+              cd ..
+              find bld -type f -exec touch -d @'"$((T_CUR - 30))"' {} +
+              make -C bld V=1
+            fi
+          '
+          E=$(date +%s%3N)
+          echo "RESULT phase=curl_build ms=$((E-T0))"
+          # verification: changed sources (T_CUR) newer than .o stamp;
+          # unchanged sources older
+          CHANGED=$(git diff-tree --no-commit-id --name-only -r HEAD | head -3)
+          echo "changed files: $CHANGED"
+          for f in $CHANGED; do
+            [ -f "$f" ] && stat -c "source %n mtime=%Y" "$f"
+          done
+          stat -c "obj %n mtime=%Y" bld/lib/*.o 2>/dev/null | head -2 || true
+
+      - name: Verify curl binary
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          test -x bld/src/curl || { echo "FAIL: no binary"; ls bld/src/ | head; exit 1; }
+          bld/src/curl --disable -V | head -2
+          echo "RESULT phase=verify ok=1"
+
+      - name: Record cache usage
+        run: |
+          U=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
+            "https://api.github.com/repos/davdhacs/curl-mtime-arm/actions/cache/usage")
+          printf 'RESULT quota_bytes=%s\n' "$(printf %s "$U" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("active_caches_size_in_bytes",""))')"
+          cat "$RUNNER_TEMP/runner.txt" "$RUNNER_TEMP/calib.txt" 2>/dev/null || true
