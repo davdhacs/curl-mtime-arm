@@ -142,11 +142,11 @@ jobs:
               # take the cold path)
               find bld -type f -exec touch -d @$STAMP {} +
               # autotools-generated files in the SOURCE tree (Makefile.in,
-              # configure, missing — untracked) keep generation-time mtimes
-              # (NOW) from the cold build; stamp them too or make regen
-              # rules fire on every warm build (found live: config.status
-              # Error 127 via the newer Makefile.in)
-              git ls-files --others --exclude-standard -z | xargs -0 -r touch -d @$STAMP
+              # configure, missing — untracked AND GITIGNORED by curl)
+              # keep restore-time mtimes (NOW); stamp them too or make
+              # regen rules fire on every warm build (found live:
+              # config.status --recheck via the newer configure)
+              { git ls-files --others --exclude-standard -z; git ls-files --others --ignored --exclude-standard -z; } | xargs -0 -r touch -d @$STAMP
               make -C bld V=1 AUTOCONF=true AUTOMAKE=true AUTOHEADER=true
             else
               autoreconf -fi
