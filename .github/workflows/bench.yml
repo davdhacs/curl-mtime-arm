@@ -141,13 +141,14 @@ jobs:
               # guarded by configure.ac -ot so build-system changes
               # take the cold path)
               find bld -type f -exec touch -d @$STAMP {} +
-              # autotools-generated files in the SOURCE tree (Makefile.in,
-              # configure, missing — untracked AND GITIGNORED by curl)
-              # keep restore-time mtimes (NOW); stamp them too or make
-              # regen rules fire on every warm build (found live:
-              # config.status --recheck via the newer configure)
-              { git ls-files --others --exclude-standard -z; git ls-files --others --ignored --exclude-standard -z; } | xargs -0 -r touch -d @$STAMP
+              git ls-files --others --exclude-standard -z | xargs -0 -r touch -d @$STAMP
+              { git ls-files --others --ignored --exclude-standard -z; } | xargs -0 -r touch -d @$STAMP
               make -C bld V=1 AUTOCONF=true AUTOMAKE=true AUTOHEADER=true
+              # post-make: re-stamp bld to NOW so the receipt snapshot
+              # captures everything (make's freshness used the STAMP;
+              # the snapshot needs post-builtAt mtimes — restored .libs
+              # files with old stamps were being dropped from receipts)
+              find bld -type f -exec touch {} +
             else
               autoreconf -fi
               mkdir bld && cd bld
